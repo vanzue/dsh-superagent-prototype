@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
@@ -13,13 +13,13 @@ function links(file: string): string[] {
   return [...readFileSync(file, 'utf8').matchAll(/\]\(([^)\s]+)\)/g)].map(match => match[1]!.split('#')[0]!).filter(target => target && !/^[a-z]+:/.test(target))
 }
 const files = (directory: string): string[] => readdirSync(join(ROOT, directory), { recursive: true, withFileTypes: true })
-  .filter(entry => entry.isFile()).map(entry => relative(ROOT, join(entry.parentPath, entry.name)))
+  .filter(entry => entry.isFile()).map(entry => relative(ROOT, join(entry.parentPath, entry.name)).replaceAll('\\', '/'))
 /**
  * Extract repo-relative file paths from the first column of a table under `## <heading>` in `docs/007-architecture.md`.
  * Bare filenames inherit the directory of the preceding path in the same cell.
  */
 function listed(heading: string): string[] {
-  const lines = read('docs/007-architecture.md').split('\n')
+  const lines = read('docs/007-architecture.md').split(/\r?\n/)
   const start = lines.indexOf(`## ${heading}`)
   const end = lines.findIndex((line, index) => index > start && line.startsWith('## '))
   // The first two rows are the header and its separator.
@@ -27,7 +27,7 @@ function listed(heading: string): string[] {
   return rows.flatMap(row => {
     let directory = ''
     return [...row.split('|')[1]!.matchAll(/`([^`]+)`/g)].map(([, name]) => {
-      if (!name!.includes('/')) return join(directory, name!)
+      if (!name!.includes('/')) return join(directory, name!).replaceAll('\\', '/')
       directory = dirname(name!)
       return name!
     })
@@ -42,7 +42,7 @@ describe('documentation', () => {
     const violations = numbered.flatMap(name => links(join(ROOT, 'docs', name)).flatMap(target => {
       const linked = resolve(ROOT, 'docs', target)
       if (!linked.endsWith('.md')) return []
-      const number = NUMBERED.exec(linked.slice(linked.lastIndexOf('/') + 1))?.[1]
+      const number = NUMBERED.exec(basename(linked))?.[1]
       return dirname(linked) === join(ROOT, 'docs') && number !== undefined && number < name.slice(0, 3) ? [] : [`${name} → ${target}`]
     }))
     expect(violations).toEqual([])

@@ -9,6 +9,8 @@ import { MemoryRepositories, key, type Assignment, type Decision, type Repositor
 import { threadFacts } from '../src/app/views/records.ts'
 import { KV } from '../src/kv.ts'
 import { SettingsSchema } from '../src/policy.ts'
+import { execFileSync } from 'node:child_process'
+import { powershellQuote } from '../src/infra/platform.ts'
 
 
 let directory: string
@@ -249,7 +251,16 @@ it('lists in the same order in SQLite and in memory, and undoes a failed nested 
 it('creates the state directory for its owner alone, and the database readable by its owner alone', () => {
   const path = join(directory, 'state', 'orchestrator.sqlite')
   new Store(path).close()
-  expect([statSync(dirname(path)).mode & 0o777, statSync(path).mode & 0o777]).toEqual([0o700, 0o600])
+  if (process.platform === 'win32') {
+    const result = execFileSync('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      `$acl = Get-Acl -LiteralPath ${powershellQuote(dirname(path))}; @{protected=$acl.AreAccessRulesProtected; sids=@($acl.Access | ForEach-Object {$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value}); owner=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value} | ConvertTo-Json -Compress`], { encoding: 'utf8' })
+    const acl = JSON.parse(result)
+    expect(acl.protected).toBe(true)
+    expect(acl.sids.sort()).toEqual([acl.owner, 'S-1-5-18'].sort())
+    const file = execFileSync('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      `@((Get-Acl -LiteralPath ${powershellQuote(path)}).Access | ForEach-Object {$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value}) | ConvertTo-Json -Compress`], { encoding: 'utf8' })
+    expect(JSON.parse(file).sort()).toEqual(acl.sids)
+  } else expect([statSync(dirname(path)).mode & 0o777, statSync(path).mode & 0o777]).toEqual([0o700, 0o600])
 })
 
 it('reads `%` and `_` in a key prefix and a search query as written, not as patterns', () => {

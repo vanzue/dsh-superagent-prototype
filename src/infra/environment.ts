@@ -10,6 +10,7 @@ import type { SubprocessOutputReader, SubprocessRuntime } from '@deepseek-ai/dsh
 import type { Deployment } from '../deployment.ts'
 import { SetupError } from '../setup.ts'
 import { CliError } from './commands.ts'
+import { nativeCommand, powershellQuote } from './platform.ts'
 
 const MARKER = '# Written by dsh-superagent on every start; edits are lost.'
 /** Markers of files written under the project's earlier names (`dsh-tag`, `dsh-go`, `dsh-freelancer`), which `dsh-superagent` owns and replaces too. */
@@ -20,11 +21,16 @@ export const workerBin = (stateDir: string): string => join(stateDir, 'worker-bi
 export const workerGitConfig = (stateDir: string): string => join(stateDir, 'worker-gitconfig')
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
 const gitQuote = (value: string): string => `"${value.replace(/[\\"]/g, char => `\\${char}`)}"`
-export const credentialHelper = (cli: string): string => `!${shellQuote(cli)} auth git-credential`
+export const credentialHelper = (cli: string): string => {
+  const argv = nativeCommand([cli, 'auth', 'git-credential'])
+  // Git for Windows runs credential helpers with its own sh; normalize only the program/script paths.
+  return `!${argv.map((value, index) => index === 0 || value === cli
+    ? shellQuote(process.platform === 'win32' ? value.replaceAll('\\', '/') : value) : value).join(' ')}`
+}
 
 export function sameDirectory(a: string, b: string): boolean {
   const real = (path: string): string => { try { return realpathSync(path) } catch { return resolve(path) } }
-  return real(a) === real(b)
+  return process.platform === 'win32' ? real(a).toLowerCase() === real(b).toLowerCase() : real(a) === real(b)
 }
 export function withoutDirectory(path: string, dir: string): string {
   return path.split(delimiter).filter(entry => !sameDirectory(entry, dir)).join(delimiter)
@@ -77,7 +83,8 @@ async function own(file: string, text: string, mode = 0o644): Promise<void> {
  * Each shim strips the shim directory from PATH before exec so wrapper scripts resolving `gh` or `lark-cli` by name reach the real binary.
  */
 export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' | 'repository' | 'github' | 'feishu'>, blockedCommands: readonly string[]): Promise<void> {
-  const { stateDir, repository, github, feishu } = deployment
+  const { stateDir, github, feishu } = deployment
+  const windows = process.platform === 'win32'
   const dir = workerBin(stateDir)
   await mkdir(dir, { recursive: true })
   const before = await readdir(dir)
@@ -85,18 +92,24 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
   // Workers may be running concurrently: write each shim to a temp file and atomically rename it so no command ever resolves past the shim directory.
   const kept = new Set<string>()
   const shim = async (name: string, body: string): Promise<void> => {
-    const temporary = join(dir, `.${name}.${process.pid}.tmp`)
-    await writeFile(temporary, `#!/bin/sh\n${MARKER}\n${body}\n`, { mode: 0o755 })
-    await rename(temporary, join(dir, name))
-    kept.add(name)
+    const file = windows ? `${name}.ps1` : name
+    const temporary = join(dir, `.${file}.${process.pid}.tmp`)
+    await writeFile(temporary, `${windows ? '' : '#!/bin/sh\n'}${MARKER}\n${body}\n`, { mode: 0o755 })
+    await rename(temporary, join(dir, file))
+    kept.add(file)
   }
   const withoutShims = [
     `self=${shellQuote(dir)}`, 'rest=', 'IFS=:', 'set -f',
     'for entry in $PATH; do [ "$entry" = "$self" ] || rest="${rest:+$rest:}$entry"; done',
     'set +f', 'unset IFS', 'PATH=$rest', 'export PATH',
   ].join('\n')
-  const run = (program: string): string => `${withoutShims}\nexec ${shellQuote(program)} "$@"`
-  const fail = (message: string): string => `echo ${shellQuote(message)} >&2\nexit 1`
+  const nativePath = `$env:PATH = (($env:PATH -split ';') | Where-Object { $_.TrimEnd('\\', '/') -ine ${powershellQuote(dir)} }) -join ';'`
+  const run = (program: string): string => windows
+    ? `$ErrorActionPreference = 'Stop'\n${nativePath}\n& ${powershellQuote(program)} @args\nexit $LASTEXITCODE`
+    : `${withoutShims}\nexec ${shellQuote(program)} "$@"`
+  const fail = (message: string): string => windows
+    ? `[Console]::Error.WriteLine(${powershellQuote(message)})\nexit 1`
+    : `echo ${shellQuote(message)} >&2\nexit 1`
   await shim('gh', run(github.cli))
   await shim('lark-cli', feishu ? run(feishu.cli) : fail('lark-cli is unavailable: this installation has no Feishu bot.'))
   for (const name of new Set(blockedCommands.filter(name => !WORKER_COMMANDS.includes(name)))) {
@@ -126,7 +139,7 @@ export function applyEnvironment(variables: Record<string, string | undefined>, 
 
 /** Spawns a command through the DSH subprocess runtime, which strips credential-shaped environment variables. */
 export async function runAsWorker(subprocess: SubprocessRuntime, argv: string[], cwd: string, signal: AbortSignal, env?: Record<string, string>): Promise<string> {
-  const handle = subprocess.spawn({ argv, cwd, graceMs: 2000, signal, ...env ? { env } : {}, stdio: { stdin: 'ignore', stdout: { maxBytes: 1 << 20 }, stderr: { maxBytes: 1 << 16 } } })
+  const handle = subprocess.spawn({ argv: nativeCommand(argv), cwd, graceMs: 2000, signal, ...env ? { env } : {}, stdio: { stdin: 'ignore', stdout: { maxBytes: 1 << 20 }, stderr: { maxBytes: 1 << 16 } } })
   const { exitCode } = await handle.done
   const read = (reader: SubprocessOutputReader | undefined): string => reader?.readFrom(0).text ?? ''
   if (exitCode === 0) return read(handle.collected.stdout)
@@ -139,7 +152,10 @@ export async function verifyEnvironment(deployment: Pick<Deployment, 'github' | 
   const { github, stateDir } = deployment
   // `-z` separates fields with NUL and never quotes paths.
   const helpers = (await runAsWorker(subprocess, ['git', 'config', '-z', '--show-origin', '--get-all', 'credential.https://github.com.helper'], stateDir, AbortSignal.any([signal, AbortSignal.timeout(60_000)])).catch(() => '')).split('\0')
-  if (helpers.join('\0') !== [`file:${workerGitConfig(stateDir)}`, credentialHelper(github.cli), ''].join('\0')) throw new SetupError('gitTooOld')
+  const origin = helpers[0]?.replace(/^file:/, '')
+  if (!origin || !sameDirectory(origin, workerGitConfig(stateDir)) || helpers[1] !== credentialHelper(github.cli) || helpers.length !== 3 || helpers[2] !== '') {
+    throw new SetupError('gitTooOld')
+  }
 }
 
 /**

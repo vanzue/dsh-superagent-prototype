@@ -20,7 +20,7 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 
 ## Prerequisites
 
-- Node.js 22.19+ or 24+, pnpm, git 2.32+, Python 3.8+ and tmux
+- Node.js 22.19+ or 24+, pnpm and git 2.32+. Unix uses Python 3.8+ and tmux for the service controller; native Windows uses PowerShell 7 and the Node controller, with neither WSL nor tmux required.
 - GitHub CLI (`gh`) 2.48 or later. Source CLI fields must point to `gh` or `lark-cli` wrappers; the host relies on their subcommands and output formats.
 - A repository on github.com; GitHub Enterprise Server is not supported. To create a checkout per Ticket, keep a local clone from which the prepare command can add worktrees. Install `git-lfs` if that repository uses Git LFS.
 - A model provider configured for DeepSeek Harness. dsh-superagent uses the profile's default model unless the Eval or Execution settings name another.
@@ -85,6 +85,58 @@ The pinned version above is public; other versions must satisfy `engines.dsh` in
 The fourth command creates `~/.dsh/profiles/superagent` from the DeepSeek Harness Web template. The fifth installs this bundle. Set `DSH_HOME` to relocate the default `~/.dsh` directory.
 
 Run the profile-creation command only for a new installation. If the profile already exists, that command replaces it and deletes its `cordis.patch.yml`, including machine configuration. Do not use it for upgrades.
+
+### Native Windows
+
+Use a dedicated `DSH_HOME` and a separate target-repository clone. Do not run Windows and WSL instances against the same repository at the same time: pause processing and disable the old instance's GitHub Source before enabling the new one. Keep old databases, Sessions and worktrees for rollback; copying an active WSL database does not migrate its Linux paths or Sessions.
+
+Run installation from PowerShell 7:
+
+```powershell
+npm install -g @deepseek-ai/dsh@0.2.1-rc.3 pnpm
+$env:DSH_HOME = "$HOME\.dsh-superagent"
+pnpm install
+pnpm build
+dsh superagent --from-default-profile web --dump-config | Out-Null
+dsh plugin --profile superagent add "link:$((Get-Location).Path)"
+```
+
+Create a separate account wrapper, for example `C:\Agent\bin\gh-agent.ps1`:
+
+```powershell
+$ErrorActionPreference = 'Stop'
+Remove-Item Env:GH_TOKEN, Env:GITHUB_TOKEN, Env:GH_HOST -ErrorAction SilentlyContinue
+$env:GH_CONFIG_DIR = 'C:\Agent\github'
+& 'C:\Program Files\GitHub CLI\gh.exe' @args
+exit $LASTEXITCODE
+```
+
+Sign in through that wrapper with `auth login`, then check `api user --jq .login`. Set its absolute path on the GitHub Source. The host supports `.exe` and `.ps1` CLIs, not `.cmd` or `.bat` wrappers. Windows worker shims are PowerShell scripts; use `gh` from PowerShell, not a personal CLI by absolute path. Account wrappers are still guardrails, not a sandbox.
+
+Protect the dedicated home and credential directory with Windows ACLs before adding credentials. The application restricts inherited access to its state directory and service-control directory to the current Windows user and SYSTEM. POSIX `chmod` is not a Windows credential protection mechanism. Do not reuse a shared directory with explicitly granted access for these files.
+
+Use a Windows absolute `stateDir` in the YAML patch, such as `'C:\Agent\state'`. Preparation commands run in PowerShell 7 with terminating errors and native command failure checking:
+
+```powershell
+$repo = 'C:\Agent\repositories\widgets'
+$head = if ($env:DSH_SUPERAGENT_GITHUB_PR_HEAD) { $env:DSH_SUPERAGENT_GITHUB_PR_HEAD } else { 'HEAD' }
+$ref = "refs/dsh-superagent/$env:DSH_SUPERAGENT_TICKET"
+git -C $repo fetch --no-tags "https://github.com/$env:DSH_SUPERAGENT_GITHUB_REPOSITORY.git" "${head}:$ref"
+git -C $repo worktree add -b "agent/$env:DSH_SUPERAGENT_NAME" $env:DSH_SUPERAGENT_DIR $ref
+```
+
+Use the native controller instead of the Python/tmux script:
+
+```powershell
+node .\scripts\dsh-superagent-windows.mjs start --profile superagent --url http://127.0.0.1:3082
+node .\scripts\dsh-superagent-windows.mjs status --profile superagent
+node .\scripts\dsh-superagent-windows.mjs restart --profile superagent
+node .\scripts\dsh-superagent-windows.mjs stop --profile superagent
+```
+
+The controller starts a detached native Node process, records its home and URL for later commands, and waits for application readiness. Closing the terminal does not stop it. A private authenticated named pipe invokes DSH's graceful shutdown in that same process; unrelated Node, terminal and WSL processes are untouched. `--respect-stop` preserves an intentional stop. This does **not** install a Windows service, boot-time task or crash-recovery supervisor.
+
+Logs and private control metadata live in `.artifacts\control\profiles\<profile>`. `status` prints health and setup information with the exit codes below. First-run code 3 means the panel is available but setup is missing. Startup timeout leaves the owned process available for `status` or `stop`; logs can contain a private browser sign-in URL, so do not publish them. Open the sign-in URL locally once to authenticate the browser. The controller uses DSH's `runCli` export from the pinned release above; for a non-global installation, pass `--dsh` with the absolute path to its `lib\bin.js`.
 
 ## Machine configuration
 

@@ -15,7 +15,17 @@ The setup follows [docs/000-philosophy.md](docs/000-philosophy.md): it takes as 
 
 ## 1. Probe
 
-Run from this checkout, once, and keep the result to yourself:
+Run from this checkout, once, and keep the result to yourself. On native Windows, use the PowerShell probe below instead:
+
+```powershell
+node -v; pnpm -v; git --version; pwsh --version; gh --version | Select-Object -First 1; dsh --version
+gh api user --jq .login
+Get-Command lark-cli -ErrorAction SilentlyContinue
+```
+
+Windows setup follows the **Native Windows** section of `docs/006-deployment.md`: use the Node service controller, `.ps1` account wrappers, Windows paths and PowerShell preparation commands. Do not install WSL, Python or tmux for native Windows operation. Protect the dedicated home and credentials with Windows ACLs.
+
+On Unix:
 
 ```sh
 node -v; pnpm -v; git --version; tmux -V; python3 --version; gh --version | head -1; dsh --version
@@ -24,7 +34,7 @@ command -v lark-cli
 grep -l -E 'id: dsh-superagent\b' "${DSH_HOME:-$HOME/.dsh}"/profiles/*/cordis.patch.yml 2>/dev/null
 ```
 
-- **Prerequisites:** Node.js 22.19+ or 24+, pnpm, git 2.32+, tmux, Python 3.8+, GitHub CLI 2.48+, and DSH within the `engines.dsh` range of `package.json`. A missing one becomes an item of the plan, not a question. DSH also needs a model provider; if the operator has never run DSH with a model, configuring one is an operator step.
+- **Prerequisites:** Node.js 22.19+ or 24+, pnpm, git 2.32+, GitHub CLI 2.48+, and DSH within the `engines.dsh` range of `package.json`; PowerShell 7 on Windows, or tmux and Python 3.8+ on Unix. A missing one becomes an item of the plan, not a question. DSH also needs a model provider; if the operator has never run DSH with a model, configuring one is an operator step.
 - **Operator login:** the `gh api user` result is the operator's own GitHub login, used as the recommendation in question 5.
 - **Existing profile:** a profile with a `dsh-superagent` entry is an earlier setup: ask whether to continue it, keep its configuration, and read Upgrade in `docs/006-deployment.md`.
 

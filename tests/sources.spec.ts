@@ -1044,6 +1044,23 @@ describe('feishu event consumer', () => {
    * and `flaky` exits after its first ready. It records each run and the PID of the latest.
    */
   function cli(mode: 'never' | 'warn' | 'ready' | 'flaky' | 'events' | 'late'): string {
+    if (process.platform === 'win32') {
+      const path = join(dir, 'lark-bot.ps1')
+      writeFileSync(path, `$dir = '${dir.replaceAll("'", "''")}'
+if ($args[0] -ne 'event') { '{"ok":true,"data":{}}'; exit 0 }
+$runs = Join-Path $dir 'runs'
+$n = if (Test-Path $runs) { [int](Get-Content $runs) + 1 } else { 1 }
+[IO.File]::WriteAllText($runs, [string]$n)
+[IO.File]::WriteAllText((Join-Path $dir 'pid'), [string]$PID)
+if ('${mode}' -ne 'never') { [Console]::Error.WriteLine('[event] ready') }
+if ('${mode}' -eq 'warn') { [Console]::Error.WriteLine('WARN the connection was reset') }
+if ('${mode}' -eq 'flaky' -and $n -eq 1) { exit 1 }
+if ('${mode}' -eq 'late') { Start-Sleep -Seconds 1 }
+if ('${mode}' -in @('events','late')) { [Console]::Write([IO.File]::ReadAllText((Join-Path $dir 'events'))); [IO.File]::WriteAllText((Join-Path $dir 'printed'), '') }
+Start-Sleep -Seconds 60
+`)
+      return path
+    }
     const path = join(dir, 'lark-bot')
     writeFileSync(path, `#!/bin/sh
   [ "$1" = event ] || { echo '{"ok":true,"data":{}}'; exit 0; }

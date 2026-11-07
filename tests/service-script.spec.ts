@@ -6,7 +6,10 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, expect, it } from 'vitest'
+import { afterEach, beforeEach, expect, it as test } from 'vitest'
+
+// This controller intentionally uses tmux; the native controller has its own integration tests.
+const it = process.platform === 'win32' ? test.skip : test
 
 let root: string
 let server: Server | undefined

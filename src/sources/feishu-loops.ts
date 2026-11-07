@@ -1,5 +1,5 @@
 /** Feishu background loops: live event stream consumer, chat/topic history backfill, chat name refresh, and subscribed thread polling. */
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
@@ -14,6 +14,7 @@ import { health, type SourceContext } from './host.ts'
 import { KV } from '../kv.ts'
 import { cursorAt, POLL_HORIZON_MS, polled, pollThreads as pollEach } from './poll.ts'
 import type { FeishuConfig } from './feishu.ts'
+import { nativeCommand } from '../infra/platform.ts'
 
 export const runFeishu = (ctx: SourceContext, signal: AbortSignal): Promise<unknown> =>
   Promise.allSettled([watch, backfillLoop, chatNamesLoop].map(loop => loop(ctx, signal)))
@@ -68,12 +69,23 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
 export const consumerRetry = (previous: number | undefined, ranMs: number): number =>
   previous === undefined || ranMs >= 60_000 ? 1000 : Math.min(previous * 2, 60_000)
 async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
-  const child = spawn(bot(ctx).cli, ['event', 'consume', 'im.message.receive_v1', '--as', 'bot'],
-    { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1',
+  const [program, ...args] = nativeCommand([bot(ctx).cli, 'event', 'consume', 'im.message.receive_v1', '--as', 'bot'])
+  const child = spawn(program!, args,
+    { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1',
       LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1' } })
   const stdout = createInterface({ input: child.stdout }); const stderr = createInterface({ input: child.stderr })
   let chain = Promise.resolve(); let diagnostic = ''; let ready = false
-  const stop = (): void => { child.stdin.end(); child.kill('SIGTERM') }
+  let stopping = false
+  const stop = (): void => {
+    if (stopping || child.exitCode !== null || child.signalCode !== null || !child.pid) return
+    stopping = true
+    child.stdin.end()
+    if (process.platform !== 'win32') { child.kill('SIGTERM'); return }
+    // PowerShell wrappers cannot exec: stop only this owned child's descendants, then the wrapper itself.
+    execFile('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      `function Stop-OwnedTree([int]$processId) { Get-CimInstance Win32_Process -Filter "ParentProcessId = $processId" | ForEach-Object { Stop-OwnedTree $_.ProcessId }; Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue }; Stop-OwnedTree ${child.pid}`],
+    { windowsHide: true }, error => { if (error) ctx.report('feishu', { state: 'error', detail: `Could not stop the event consumer: ${error.message}` }) })
+  }
   signal.addEventListener('abort', stop, { once: true })
   const timeout = setTimeout(() => { diagnostic = 'Feishu event consumer did not become ready within 45 seconds'; stop() }, 45_000)
   stderr.on('line', (line: string) => {

@@ -16,6 +16,8 @@ Setup has many steps, so an agent does it with you. Ask your coding agent:
 
 It asks one short question at a time, shows the full plan once, and then installs and configures everything. [SETUP.md](SETUP.md) is what it follows.
 
+Native Windows is supported with PowerShell 7 and a Node-based background controller; WSL and tmux are not required. See [Native Windows deployment](docs/006-deployment.md#native-windows).
+
 ## Documentation
 
 Read the numbered documents in order; each builds only on the ones before it.

@@ -1,7 +1,7 @@
 import { execFile, spawn } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SENSITIVE_ENV_PATTERN, type SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
@@ -10,6 +10,8 @@ import { GIT_LOCATION, agentVariables, credentialHelper, runAsWorker, verifyDire
 import { CliError } from '../src/infra/commands.ts'
 import { testDeployment } from './fixtures/deployment.ts'
 import { gitEnv } from './fixtures/git.ts'
+import { powershellQuote, prepareCommand } from '../src/infra/platform.ts'
+import { Commands } from '../src/infra/commands.ts'
 
 // Git and shell subprocesses can exceed the 5s default timeout when the test suite runs in parallel.
 vi.setConfig({ testTimeout: 30_000 })
@@ -22,7 +24,44 @@ const workerEnv = (env: Record<string, string | undefined>): Record<string, stri
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'environment-')); mkdirSync(join(dir, 'real')) })
 afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
-describe('worker shims', () => {
+describe.runIf(process.platform === 'win32')('Windows worker shims', () => {
+  it('preserves literal arguments and isolated credentials across the PowerShell shim and account wrapper', async () => {
+    const wrapper = join(dir, "agent's gh.ps1")
+    const config = join(dir, 'account config')
+    writeFileSync(wrapper, `$env:GH_CONFIG_DIR = ${powershellQuote(config)}\n& ${powershellQuote(process.execPath)} -e 'console.log(JSON.stringify({args:process.argv.slice(1),config:process.env.GH_CONFIG_DIR,path:process.env.PATH,token:process.env.GH_TOKEN}))' @args\nexit $LASTEXITCODE\n`)
+    const deployment = testDeployment({ stateDir: dir, github: { ...testDeployment().github, cli: wrapper } })
+    await writeEnvironment(deployment, [])
+    const args = ['api', '-f', 'body="quoted" & $(whoami) `x`\nnext', "it's literal", '--', '--literal']
+    const path = [workerBin(dir), process.env.PATH].join(delimiter)
+    const commands = new Commands(() => deployment, { ...agentVariables(dir), PATH: path }, new AbortController().signal)
+    const result = JSON.parse(await commands.run(join(workerBin(dir), 'gh.ps1'), args))
+    expect(result).toMatchObject({ args, config })
+    expect(result).not.toHaveProperty('token')
+    expect(result.path.split(delimiter)).not.toContain(workerBin(dir))
+  })
+  it('blocks commands and removes obsolete shims without overwriting foreign files', async () => {
+    const deployment = testDeployment({ stateDir: dir, feishu: undefined })
+    await writeEnvironment(deployment, ['personal-gh'])
+    const commands = new Commands(() => deployment, {}, new AbortController().signal)
+    await expect(commands.run(join(workerBin(dir), 'personal-gh.ps1'), [])).rejects.toMatchObject({ exitCode: 1, message: expect.stringContaining('is blocked') })
+    await expect(commands.run(join(workerBin(dir), 'lark-cli.ps1'), [])).rejects.toMatchObject({ exitCode: 1, message: expect.stringContaining('unavailable') })
+    await writeEnvironment(deployment, [])
+    expect(readdirSync(workerBin(dir)).sort()).toEqual(['gh.ps1', 'lark-cli.ps1'])
+    writeFileSync(join(workerBin(dir), 'foreign.ps1'), 'exit 0')
+    await expect(writeEnvironment(deployment, [])).rejects.toThrow('was not written by dsh-superagent')
+  })
+  it('passes Git credential input to an account script whose path contains spaces and an apostrophe', async () => {
+    const wrapper = join(dir, "account's helper.ps1")
+    writeFileSync(wrapper, `if (($args -join ' ') -ne 'auth git-credential get') { exit 3 }\n$inputText = [Console]::In.ReadToEnd()\nif (-not $inputText.Contains('host=example.invalid')) { exit 4 }\n[Console]::WriteLine("username=fixture-user\`npassword=fixture-password")\n`)
+    await writeEnvironment(testDeployment({ stateDir: dir, github: { ...testDeployment().github, cli: wrapper } }), [])
+    const fill = exec('git', ['-c', 'credential.helper=', '-c', `credential.helper=${credentialHelper(wrapper)}`, 'credential', 'fill'],
+      { env: gitEnv({ GIT_CONFIG_GLOBAL: workerGitConfig(dir), GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' }) })
+    fill.child.stdin?.end('protocol=https\nhost=example.invalid\n\n')
+    expect((await fill).stdout).toContain('username=fixture-user')
+  })
+})
+
+describe.skipIf(process.platform === 'win32')('POSIX worker shims', () => {
   it('run a wrapper that calls `gh` by name without reaching the shim again, and keep the caller\'s other PATH entries', async () => {
     program(join(dir, 'real', 'gh'), 'echo "{\\"login\\":\\"agent-bot\\",\\"config\\":\\"$GH_CONFIG_DIR\\",\\"path\\":\\"$PATH\\"}"')
     const wrapper = program(join(dir, 'gh-agent'), `GH_CONFIG_DIR=${dir}/agent-config exec gh "$@"`)
@@ -84,7 +123,7 @@ describe('agent git configuration', () => {
     await git('init', '-q', 'repo')
     await exec('git', ['-C', 'repo', 'remote', 'add', 'origin', 'git@github.com:acme/widgets.git'], { cwd: dir, env })
     expect(await git('-C', 'repo', 'remote', 'get-url', '--push', 'origin')).toBe('https://github.com/acme/widgets.git')
-    expect(await git('config', '--show-origin', '--get-all', 'credential.https://github.com.helper')).toBe(`file:${workerGitConfig(dir)}\t${credentialHelper('/opt/agent tools/gh')}`)
+    expect(await git('config', '-z', '--show-origin', '--get-all', 'credential.https://github.com.helper')).toBe(`file:${workerGitConfig(dir)}\0${credentialHelper('/opt/agent tools/gh')}\0`)
     expect(await git('config', '--get-all', 'credential.helper')).toBe('')
     await expect(git('config', 'commit.gpgsign')).rejects.toThrow()
     await expect(git('config', 'core.abbrev')).rejects.toThrow()
@@ -96,7 +135,7 @@ describe('agent git configuration', () => {
   })
 })
 
-it('fails instead of asking the operator\'s askpass helpers when the agent\'s credential helper has no answer', async () => {
+it.skipIf(process.platform === 'win32')('fails instead of asking the operator\'s askpass helpers when the agent\'s credential helper has no answer', async () => {
   const log = join(dir, 'asked')
   const askpass = program(join(dir, 'askpass'), `echo asked >> ${log}; echo operator-secret`)
   const agent = program(join(dir, 'real', 'gh'), 'exit 0')
@@ -115,7 +154,7 @@ it('removes every spelling of a directory from PATH and keeps the other entries'
   mkdirSync(join(dir, 'state', 'worker-bin'), { recursive: true })
   symlinkSync(join(dir, 'state'), join(dir, 'link'))
   const bin = join(dir, 'state', 'worker-bin')
-  expect(withoutDirectory([`${bin}/`, join(dir, 'link', 'worker-bin'), '/usr/bin', 'node_modules/.bin'].join(':'), bin)).toBe('/usr/bin:node_modules/.bin')
+  expect(withoutDirectory([`${bin}/`, join(dir, 'link', 'worker-bin'), '/usr/bin', 'node_modules/.bin'].join(delimiter), bin)).toBe(['/usr/bin', 'node_modules/.bin'].join(delimiter))
 })
 
 /** Minimal SubprocessRuntime backed by child_process.spawn with an isolated global git config. */
@@ -154,7 +193,7 @@ describe('ticket directory check', () => {
     await expect(check('repo')).rejects.toThrow(/bad config/)
   })
   it('reports a failed command\'s exit status', async () => {
-    const failing = ['sh', '-c', 'echo nope >&2; exit 3']
+    const failing = prepareCommand(process.platform === 'win32' ? '[Console]::Error.WriteLine("nope"); exit 3' : 'echo nope >&2; exit 3')
     const error = await runAsWorker(subprocess(join(dir, 'global')), failing, dir, signal).catch((e: unknown) => e)
     expect(error).toBeInstanceOf(CliError)
     expect(error).toMatchObject({ message: 'nope', exitCode: 3 })
