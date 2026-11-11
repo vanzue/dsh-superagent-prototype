@@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-settings'
 import { Runtime } from './app/runtime.ts'
 import { Config, machineOf, type DeploymentConfig } from './deployment.ts'
+import { MonitorRuntime } from './monitor/runtime.ts'
 
 export const name = 'dsh-superagent'
 export const inject = ['agents', 'sessionController', 'sessionPersistence', 'workspaceRegistry', 'permissionPresets', 'tools', 'systemPrompt', 'skills', 'webServer', 'llm', 'subprocess']
@@ -11,6 +12,12 @@ export async function apply(ctx: Context, config: DeploymentConfig): Promise<voi
   const machine = machineOf(config)
   // The management panel provides its own settings UI, so disable DSH's auto-generated settings page.
   ctx.inject(['settings'], child => { child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)) })
+  if (config.mode === 'monitor') {
+    const monitor = new MonitorRuntime(ctx, machine.stateDir, config.monitor)
+    ctx.effect(() => () => monitor.stop())
+    ctx.logger.info('dsh-superagent read-only monitor ready; no dispatch, workers or GitHub writes')
+    return
+  }
   // Volatile limits update in place without a restart; account changes restart dsh-superagent. DSH's settings service stops
   // serving this entry while dsh-superagent restarts and rereads it only on a configuration write, so trigger `describe()`
   // after restart to keep open configuration forms editable without a page reload.

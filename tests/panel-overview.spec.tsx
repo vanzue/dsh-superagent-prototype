@@ -1,11 +1,49 @@
 // @vitest-environment jsdom
 // The overview.
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { en, zh } from '../src/client/locales.ts'
 import { usePanel, mount, remount, all, find, tab, click, text } from './fixtures/panel.tsx'
 import { server, droppedReply, threadSummary } from './fixtures/panel-server.ts'
 
 usePanel()
+it('shows uncertain main delivery recovery and opens its ACP transcript instead of a DSH session', async () => {
+  const fetch = globalThis.fetch
+  let uncertain = true
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/main/recover')) uncertain = false
+    const response = await fetch(url, init)
+    if (!url.endsWith('/state')) return response
+    return new Response(JSON.stringify({ ...JSON.parse(await response.text()), main: {
+      backend: 'copilot', sessionId: 'main-acp', running: false, pending: uncertain, uncertain,
+      error: uncertain ? 'Interrupted turn' : undefined,
+    } }))
+  }))
+  await mount()
+  expect(text()).toContain('Interrupted turn')
+  await click(zh.openMaster)
+  expect(text()).toContain(zh.mainTranscript)
+  expect(server.requests.some(request => request.path === 'main/transcript')).toBe(true)
+  await click(find(zh.close, '[role="dialog"] button'))
+  await click(zh.mainRecover)
+  await click(find(zh.confirm, '[role="dialog"] button'))
+  expect(server.requests.some(request => request.path === 'main/recover' && request.method === 'POST')).toBe(true)
+  expect(text()).not.toContain('Interrupted turn')
+})
+
+it('shows partial mirror progress and retry failures without claiming a completed full sync', async () => {
+  const fetch = globalThis.fetch
+  vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => url.endsWith('/mirror')
+    ? Promise.resolve(new Response(JSON.stringify({ upstream: 'microsoft/intelligent-terminal', fork: 'vanzue/intelligent-terminal',
+      phase: 'error', issues: 12, discussions: 0, comments: 34, changes: 20, error: 'GitHub rate limit',
+      nextRunAt: '2026-11-12T00:00:00Z', recent: [] }))) : fetch(url, init)))
+  await mount(en)
+  expect(text()).toContain('Daily upstream mirror')
+  expect(text()).toContain('Reconciled 12 issues, 0 discussions, 34 comments')
+  expect(text()).toContain('Sync interrupted; retry scheduled')
+  expect(text()).toContain('GitHub rate limit')
+  expect(all('a').some(link => link.getAttribute('href') === 'https://github.com/vanzue/intelligent-terminal/discussions')).toBe(true)
+})
+
 it('leads the overview with the pending Tickets, then problems, the last day and the Executor, each linking to its stage', async () => {
   await mount()
   expect(tab(zh['tab.overview']).getAttribute('aria-selected')).toBe('true')

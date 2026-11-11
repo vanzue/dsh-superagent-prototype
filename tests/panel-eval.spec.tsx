@@ -7,6 +7,18 @@ import { usePanel, mount, remount, settle, all, find, tab, click, type, text, fi
 import { server } from './fixtures/panel-server.ts'
 
 usePanel()
+it('selects an independent Copilot main backend and saves its executable without changing worker settings', async () => {
+  await mount()
+  await click(tab(zh['tab.settings']))
+  await click(find(zh['term.eval'], '.dt-settings-link'))
+  await click('GitHub Copilot (ACP)')
+  await type(field<HTMLInputElement>(zh.copilotExecutable), 'C:\\tools\\copilot.exe')
+  await click(zh.save)
+  expect(server.settings.eval.backend).toBe('copilot')
+  expect(server.settings.eval.copilot.executable).toBe('C:\\tools\\copilot.exe')
+  expect(server.settings.executor.backend).toBe('dsh')
+})
+
 it('opens the Decisions under Policy from the flow line with their reasons, Decisions that start work first, filterable by kind',
   async () => {
   await mount()

@@ -152,7 +152,8 @@ function routeTool(host: MainToolsHost): Tool {
   })
 }
 /** Builds the main Session's tools; `agent` scopes prompt preview resources to that Session. */
-export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
+export function mainTools(host: MainToolsHost, agent: Agent | string): Tool[] {
+  const sessionId = typeof agent === 'string' ? agent : agent.id
   const resources: MainResourceHost = { ...host.resources, sessions: host.sessions, settings: host.settings }
   return [
     readTool('Read one page of a resource the resource parameter lists, such as the ticket list or a ticket. Follow next_offset, and next_resource where a page names one.',
@@ -209,7 +210,7 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
       name: 'orchestrator_eval_read',
       description: 'Read more of a candidate\'s context, always with its trigger_id: a message or stub whole by message_id, an image by image_id, the root, the parent, a thread page by cursor, or a file or directory by path.',
       schema: EvalReadSchema,
-      execute: async (read, signal) => host.assessor.read(agent, read, signal),
+      execute: async (read, signal) => host.assessor.read(typeof agent === 'string' ? undefined : agent, read, signal),
     }),
     tool({
       name: 'orchestrator_eval_decide',
@@ -287,8 +288,8 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
         if (args.preview) {
           const preview = host.prompts.preview(args.config)
           return { scope: preview.scope, previews: (['orchestrator', 'worker'] as const).map(role => {
-            const resource = `prompt-preview/${key(agent.id, role, preview[role])}`
-            host.resources.pages.set(`${agent.id}:${resource}`, preview[role])
+            const resource = `prompt-preview/${key(sessionId, role, preview[role])}`
+            host.resources.pages.set(`${sessionId}:${resource}`, preview[role])
             return { role, chars: preview[role].length, read: resource }
           }) }
         }

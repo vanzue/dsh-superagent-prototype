@@ -4,6 +4,7 @@ import { UserError } from '../src/core/index.ts'
 import { Commands } from '../src/infra/commands.ts'
 import { Setup } from '../src/app/setup.ts'
 import { SettingsConflict } from '../src/app/settings.ts'
+import { KV } from '../src/kv.ts'
 import { startRuntime, type Host } from './fixtures/host.ts'
 
 let h: Host | undefined
@@ -14,6 +15,18 @@ function deferred<T>() {
   return { promise, resolve }
 }
 const model = { provider: 'worker-provider', model: 'worker-model' }
+
+it('allows only the panel to change worker backends or Copilot execution configuration', async () => {
+  h = await startRuntime()
+  const { settings, store } = h.runtime
+  const executor = store.settings().executor
+  for (const change of [{ backend: 'copilot' }, { copilot: { ...executor.copilot, executable: process.execPath } }]) {
+    await expect(settings.save('executor', { ...executor, ...change }, store.blockRevision('executor'), 'tool'))
+      .rejects.toThrow(new UserError('panelOnlyEnvironment'))
+  }
+  await settings.save('executor', { ...executor, backend: 'copilot' }, store.blockRevision('executor'), 'panel')
+  expect(store.settings().executor.backend).toBe('copilot')
+})
 
 it('refuses a save of a block that another save changed during its model or account check, and saves nothing of it', async () => {
   h = await startRuntime()
@@ -39,6 +52,24 @@ it('refuses a save of a block that another save changed during its model or acco
   accounts.resolve()
   await expect(moved).rejects.toThrow(SettingsConflict)
   expect(store.settings().sources.github!.config).toMatchObject({ cli: value.config.cli, pollSeconds: 90 })
+})
+
+it('selects Copilot main only through the panel, skips DSH model checks and cannot bypass an unresolved turn', async () => {
+  h = await startRuntime()
+  const { settings, store } = h.runtime
+  const llm = (h.ctx as unknown as { llm: { resolveCallConfig: ReturnType<typeof vi.fn> } }).llm
+  llm.resolveCallConfig.mockClear()
+  const value = { ...store.settings().eval, backend: 'copilot', model,
+    copilot: { executable: process.execPath, home: '', model: 'auto' } }
+  await expect(settings.save('eval', value, store.blockRevision('eval'), 'tool'))
+    .rejects.toThrow(new UserError('panelOnlyEnvironment'))
+  const saved = await settings.save('eval', value, store.blockRevision('eval'), 'panel')
+  expect(saved.restarting).toBe(true)
+  expect(llm.resolveCallConfig).not.toHaveBeenCalled()
+  store.set(KV.copilotMain.state, { config: value.copilot, uncertain: true })
+  await expect(settings.save('eval', { ...value, backend: 'dsh' }, store.blockRevision('eval'), 'panel'))
+    .rejects.toThrow(new UserError('mainBackendBusy'))
+  expect(store.settings().eval.backend).toBe('copilot')
 })
 
 it('refuses a Policy sync that a Policy save outran, reports it on sync:feishu, and keeps the save', async () => {

@@ -6,6 +6,8 @@ import type { PromptVersion } from './app/prompts.ts'
 import type { SettingsVersion } from './app/store.ts'
 import type { SettingsSave } from './policy.ts'
 import type { Retry } from './sources/github.ts'
+import type { CopilotState } from './executor/copilot.ts'
+import type { CopilotMainState } from './app/copilot-main.ts'
 
 /** Key of a KV record whose value has type `V`; a plain string represents an untyped key. */
 export type Key<V> = string & { readonly __value?: V }
@@ -19,6 +21,10 @@ export function family<V, A extends unknown[] = [string]>(prefix: string, format
 }
 
 export const KV = {
+  copilotMain: { state: record<CopilotMainState>('copilot-main:state'),
+    receipt: family<'sending' | 'delivered' | 'done' | 'uncertain'>('copilot-main:receipt:'),
+    notice: family<string>('copilot-main:notice:') },
+  copilot: { session: family<CopilotState>('copilot-session:') },
   /** Store: current database schema version. */
   store: { schema: record<number>('schema') },
   /** Settings: current revision, per-block revision, and saved settings snapshots (including the current one). */
@@ -30,7 +36,7 @@ export const KV = {
     /** The built-in text of a prompt part an override was edited from, by its `base`, which shows what an upgrade changed. */
     builtIn: family<string, [base: string]>('prompt-built-in:') },
   /** Runtime: the main Session's ID. */
-  runtime: { masterId: record<string>('master-id') },
+  runtime: { masterId: record<string>('master-id'), mentionsSince: record<string>('mentions-since') },
   /** Sessions: prompt revisions each Session has worked under, ordered oldest first; the last entry (`.at(-1)`) is its active revision. */
   sessions: { prompts: family<number[], [session: string]>('session-prompts:') },
   /** Schema 11 migration: legacy main-Session queues imported into the effect table. */

@@ -19,9 +19,11 @@ import { SKILL_PREFIX, type PromptVersion, type Prompts } from './prompts.ts'
 import type { Store } from './store.ts'
 import { KV } from '../kv.ts'
 import type { RegisterTool, Tool } from './tools/tool.ts'
+import type { MainSession } from './copilot-main.ts'
 
 /** Host dependencies used by `Sessions`. */
 export interface SessionsHost {
+  readonly main?: MainSession | undefined
   /** DSH Cordis context: sessions, agents, persistence, and their events. */
   readonly context: Context
   readonly store: Pick<Store, 'tickets' | 'settings' | 'get' | 'set' | 'keys'>
@@ -155,12 +157,20 @@ export class Sessions {
   }
   /** Returns whether `sessionId` already holds the message delivered under `requestId`, or `false` if the session does not exist. */
   async holds(sessionId: string, requestId: string): Promise<boolean> {
+    if (sessionId === this.host.masterId && this.host.main) return this.host.main.holds(requestId)
     const result = await this.ctx.sessionController.resolveAgent(sessionId as SessionId)
     return !('error' in result) && await this.agentDelivery.holds(result.agent, key(requestId))
   }
   /** Deliver a message once per request id: to the next turn, the current one, or `inject`ed with its label without waking the agent. */
   async prompt(sessionId: string, requestId: string, text: string, mode: 'queue' | 'steer' | { inject: string }, authorize?: () => void,
     accepted?: () => void): Promise<void> {
+    if (sessionId === this.host.masterId && this.host.main) {
+      authorize?.()
+      if (typeof mode === 'object') this.host.main.inject(requestId, text)
+      else await this.host.main.prompt(requestId, text)
+      accepted?.()
+      return
+    }
     const result = await this.ctx.sessionController.resolveAgent(sessionId as SessionId)
     if ('error' in result) throw result.error
     await this.agentDelivery.send(result.agent, key(requestId), text, mode, this.host.lifetime, authorize, accepted)
@@ -178,6 +188,7 @@ export class Sessions {
   }
   /** Injects a notice into the main Session without waking it; no-op if the main Session does not exist yet. */
   private async inject(name: string, value: Record<string, unknown>, summary: string): Promise<void> {
+    if (this.host.main) { this.host.main.inject(name, JSON.stringify(value)); return }
     const resolved = await this.ctx.sessionController.resolveAgent(this.host.masterId as SessionId)
     if ('error' in resolved) return
     // Deduplicate by notice name and payload hash so retries are idempotent while updated payloads still deliver.
@@ -189,7 +200,7 @@ export class Sessions {
     const { store, prompts, effects } = this.host
     const sessions = store.keys(KV.sessions.prompts).flatMap(name => {
       const sessionId = name.slice(KV.sessions.prompts.prefix.length), revision = store.get(name)?.at(-1)
-      return this.ctx.agents.get(sessionId as SessionId) && revision !== undefined ? [{ sessionId, revision }] : []
+      return (this.ctx.agents.get(sessionId as SessionId) || this.host.main && sessionId === this.host.masterId) && revision !== undefined ? [{ sessionId, revision }] : []
     })
     return { revision: prompts.current().revision, sessions, notificationPending: effects.pending('notice', 'prompts') }
   }
@@ -230,6 +241,7 @@ export class Sessions {
     return ticketId === undefined ? undefined : this.host.store.tickets.get(ticketId)
   }
   private async decorate(agent: Agent): Promise<void> {
+    if (this.host.main && agent.id === this.host.masterId) return
     if (this.bindings.has(agent)) return
     const host = this.host
     const master = agent.id === host.masterId

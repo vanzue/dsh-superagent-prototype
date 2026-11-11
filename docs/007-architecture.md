@@ -194,6 +194,22 @@ Plugins receive `SourceHost`: the registry and `context(kind)`. The kind itself 
 
 That context supplies deployment and commands, setup readiness (`ready`, `configured`, `problem`), configuration, `receive`, `atomic`, and typed `state`. It also exposes Thread reads and metadata writes, Ticket reads and binding/closure commands, Trigger reads, `notify` through Outbox, and `report` for declared health entries.
 
+### Read-only monitoring
+
+`mode: monitor` mounts `MonitorRuntime` instead of `Runtime`, so no Engine, sessions, tools, workers, Sources or outbox exist in that profile. Its HTTP surface permits only cached GETs; mutation attempts, including unpause and configuration writes, return 403. The browser discovers the mode before mounting pages and never mounts execution views for a monitor.
+
+The collector uses anonymous GETs against a fixed repository/endpoint allowlist on `api.github.com`, refuses redirects, and never invokes `gh` or reads credentials. A separate locked state directory binds snapshots to one repository and persists rate-limit backoff across restarts. Execution refuses monitor-marked state, and monitoring refuses an execution database. This boundary does not sandbox the OS user or other DSH plugins.
+
+Open Issues/PRs are paginated; a seven-day rolling snapshot includes comments, review comments, recent updates, public events and Actions runs across branches. Each collection replaces the previous snapshot atomically. Partial sections and public event/CI coverage limits are surfaced, not silently treated as a complete audit history. Collection never creates domain Triggers or Tickets, including for explicit mentions.
+
+### Worker backends
+
+`WorkerExecutors` registers `WorkerBackend` implementations for DSH and Copilot, owns the single pair of durable `launch`/`delivery` handlers, and shares `WorkerSlots`. A ticket's `execution.backend` selects its executor; missing bindings mean DSH for backward compatibility. Changing the default affects only newly accepted tickets.
+
+`CopilotExecutor` prepares the same worktree and launches an owned ACP stdio process per active turn. Each ticket has an isolated CLI home, persisted session/config binding, a write-ahead in-flight request marker and completed request IDs. Followups are queued, not steered. A completed turn closes the process; the next loads its persisted session. An interrupted or uncertain send requires explicit human continuation, never an automatic replay of possible external actions.
+
+The loopback MCP bridge authenticates each assignment separately and reuses `executorTools`. Authorization is checked on calls and again before Engine mutations after asynchronous reads. Tokens are revoked on cleanup. ACP permissions are granted once only while the assignment is current; cancellation and EOF stop the owned process. A final, blocked, failed or attention-requesting report durably settles the request and immediately revokes further tool authorization, then cancels the turn after returning its MCP result. This prevents a worker from continuing past its own handoff without fresh input. Only structured reports change business status; an unreported idle turn becomes waiting. Transcripts are stored under the private state directory and read through the normal resource interface.
+
 ### DshExecutor
 
 `DshExecutor` (`src/executor/dsh.ts`) provides one Session and directory per Ticket. `start` and `deliver` enqueue `launch` and `delivery` effects. `stop` cancels the turn through `Store.afterCommit`, so a rolled-back end does not stop the worker.
@@ -352,6 +368,20 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/views/settings.ts` | The settings page's view: each block with its revision, each Source's settings with its kind's form, and the execution environment |
 | `src/app/views/overview.ts` | The overview: Tickets that need a person, problems, the last day's flow and the Executor's load |
 | `src/executor/dsh.ts` | The DshExecutor, `WorkerSlots`, `ticketExecution`, `inputMessage` and `mandateInstructions` |
+| `src/executor/backends.ts` | Persisted backend routing, shared capacity, and one set of durable worker effect handlers |
+| `src/executor/copilot.ts` | Copilot ACP worker lifecycle, uncertain-send recovery, scoped MCP tools and transcript persistence |
+| `src/infra/acp.ts` | Bounded stdio JSON-RPC, permission callbacks, cancellation and owned process shutdown |
+| `src/infra/worker-mcp.ts` | Authenticated loopback MCP with revocable assignment-scoped tool sets |
+| `src/monitor/model.ts` | Repository-scoped snapshot, schedule and configuration schemas |
+| `src/monitor/github.ts` | Anonymous fixed-endpoint GET collector, pagination, rate limits and coverage reporting |
+| `src/monitor/runtime.ts` | Isolated monitoring lifecycle, persistent repository binding and fail-closed read-only HTTP |
+| `src/mirror/github.ts` | Repository-bound Issue/Discussion reads and fork writes; shared GraphQL mutation templates |
+| `src/app/copilot-main.ts` | Selectable ACP orchestrator with serial durable turns, MCP-only capabilities, delivery receipts and explicit uncertain-send recovery |
+| `src/llm/copilot.ts` | Keyless host model provider for ordinary Chat and auxiliary inference; ACP proposes tools and DSH retains execution and permissions |
+| `src/mirror/sync.ts` | Daily complete mirror reconciliation, provenance markers, pacing, long-body splitting and durable retries |
+| `src/infra/fork-gh.ts` | Fork-only CLI guard, independent GraphQL node ownership checks and path-scoped git credentials |
+| `src/sources/discussions.ts` | Fresh human Discussion mentions, context and idempotent fork-only replies |
+| `src/sources/fork.ts` | Optional daily mirror and Discussion source plugin |
 | `src/executor/background.ts` | A worker's background work in DeepSeek Harness, the shell jobs its Session owns (`ctx.jobs`) and its subagents (`ctx.subagents`): `runningJobs`, `untilQuiet`, `killJobs`, `collectJobs`, `stopSubagents`, `stopBackground`, `until`, and `cancelled`, the workers whose turn a stop of their subagents cancelled |
 | `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
 | `src/infra/environment.ts` | The agent's process environment: command shims, the git configuration and credential helper, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
@@ -377,6 +407,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/feishu-image.ts` | Reads a Feishu message's image as an attachment for the assessing Session |
 | `src/client/index.tsx` | The client plugin entry: the sidebar entry, the main panel and the page in DeepSeek Harness's Plugin Manager |
 | `src/client/app.tsx` | The panel: header, search, glossary, tabs and the page of the current route |
+| `src/client/monitor.tsx` | Read-only repository dashboard, local filtering, coverage and permission status |
 | `src/client/provider.tsx` | What every page reads from its host: copy, calls, navigation, notices, the state poll, and `restart`, which reads the state quickly while dsh-superagent restarts |
 | `src/client/api.ts` | Calls and polls of the management API, typed by `src/app/api.ts`, and the Decision filters of the Eval status |
 | `src/client/route.ts` | The tabs, the settings groups, the typed routes that `parseRoute` reads, and the route memory with the settings group opened last |
@@ -428,7 +459,12 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
 | `tests/runtime-concurrency.spec.ts` | Work that overlaps: Triggers during a pass, Tickets that change during deliveries and launches |
 | `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries |
+| `tests/monitor.spec.ts`, `panel-monitor.spec.tsx` | Anonymous collection, mutation denials, absent agents, isolated persistent state, backoff and read-only UI |
+| `tests/fork-mirror.spec.ts` | Fork write boundaries, GraphQL ownership, mirror idempotency/recovery, preserved local comments and explicit-only routing |
+| `tests/copilot-main.spec.ts` | Copilot main routing without DSH inference, MCP authorization, ordered delivery, session loading and uncertain-send recovery |
+| `tests/copilot-model.spec.ts` | Keyless Chat and auxiliary inference, streaming, native tool proposals, host result continuation and cancellation |
 | `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, and the refusals of the pause, a sync and a block |
+| `tests/copilot.spec.ts`, `acp.spec.ts` | Backend binding, shared capacity, scoped MCP reporting, uncertain recovery, ACP permissions and disconnects |
 | `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to |
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
 | `tests/migration.spec.ts` | The schema 11 migration: every stored record in its current shape, and the refusal of older schemas |

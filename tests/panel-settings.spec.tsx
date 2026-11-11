@@ -9,6 +9,17 @@ import { usePanel, mount, remount, settle, all, find, tab, click, type, text, fi
 import { server } from './fixtures/panel-server.ts'
 
 usePanel()
+it('saves Copilot configuration separately from the DSH model choice', async () => {
+  await mount()
+  await click(zh['tab.execution'])
+  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  await click('GitHub Copilot (ACP)')
+  expect(document.querySelector('.dt-model')).toBeNull()
+  await type(field<HTMLInputElement>(zh.copilotExecutable), 'C:\\tools\\copilot.exe')
+  await type(field<HTMLInputElement>(zh.copilotModel), 'auto')
+  await click(zh.save)
+  expect(server.settings.executor).toMatchObject({ backend: 'copilot', copilot: { executable: 'C:\\tools\\copilot.exe', model: 'auto' } })
+})
 it('keeps a person\'s own value where another save changed the same setting, and says so', async () => {
   await mount()
   await click(zh['tab.execution'])
@@ -32,7 +43,8 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
   const [provider, model] = all('.dt-model input')
   await type(provider as HTMLInputElement, 'worker-provider'); await type(model as HTMLInputElement, 'worker-model')
   await click(zh.save)
-  expect(server.settings.eval).toEqual({ mode: 'auto', timeoutSeconds: 180, model: { provider: 'worker-provider', model: 'worker-model' } })
+  expect(server.settings.eval).toEqual({ backend: 'dsh', copilot: { executable: '', home: '', model: 'auto' },
+    mode: 'auto', timeoutSeconds: 180, model: { provider: 'worker-provider', model: 'worker-model' } })
   await click(find(zh['promptPart.runtime/work'], '.dt-settings-link'))
   await type(field<HTMLInputElement>(zh.maxWorkers), '5')
   // An empty root uses the default directory, which the field names instead of looking set.
@@ -53,7 +65,7 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
     'worker-model'); await type(effort as HTMLInputElement, 'high')
   expect([...document.querySelectorAll('#dt-worker-model-efforts option')].map(option => option.getAttribute('value'))).toEqual(['high'])
   await click(zh.save)
-  expect(server.settings.executor).toEqual({ maxWorkers: 5, directory: '/srv/work',
+  expect(server.settings.executor).toEqual({ backend: 'dsh', copilot: { executable: '', home: '', model: 'auto' }, maxWorkers: 5, directory: '/srv/work',
     prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"', blockedCommands: ['gh-personal', 'gh.other'], model: { provider: 'worker-provider',
       model: 'worker-model', reasoningEffort: 'high' } })
   expect(server.requests.filter(request => request.method === 'PUT').map(request => request.path)).toEqual(['settings/eval',

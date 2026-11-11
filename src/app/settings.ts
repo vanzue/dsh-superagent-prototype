@@ -21,7 +21,9 @@ import { KV } from '../kv.ts'
 export class SettingsConflict extends Error {}
 const now = (): string => new Date().toISOString()
 /** Executor settings that control shell execution paths, prepare commands, and command shims. */
-const environment = ({ executor }: SettingsValue) => JSON.stringify([executor.directory, executor.prepare, executor.blockedCommands])
+const environment = ({ executor }: SettingsValue) => JSON.stringify([executor.directory, executor.prepare, executor.blockedCommands,
+  executor.backend, executor.copilot])
+const mainBackend = ({ eval: config }: SettingsValue) => JSON.stringify([config.backend, config.copilot])
 
 /** Schema parser, settings merger, and non-panel origin guard for one settings block kind. */
 interface Block {
@@ -37,7 +39,10 @@ const BLOCKS: Record<'policy' | 'eval' | 'executor' | 'source', Block> = {
     },
     merge: (settings, value) => ({ ...settings, policy: value as SettingsValue['policy'] }),
   },
-  eval: { parse: value => EvalConfigSchema.parse(value), merge: (settings, value) => ({ ...settings, eval: value as SettingsValue['eval'] }) },
+  eval: { parse: value => EvalConfigSchema.parse(value), merge: (settings, value) => ({ ...settings, eval: value as SettingsValue['eval'] }),
+    guard: (current, candidate, origin) => {
+      if (origin !== 'panel' && mainBackend(current) !== mainBackend(candidate)) throw new UserError('panelOnlyEnvironment')
+    } },
   executor: {
     parse: value => ExecutorConfigSchema.parse(value),
     merge: (settings, value) => ({ ...settings, executor: value as SettingsValue['executor'] }),
@@ -54,6 +59,7 @@ const BLOCKS: Record<'policy' | 'eval' | 'executor' | 'source', Block> = {
 
 /** Host dependencies used by `Settings`. */
 export interface SettingsHost {
+  readonly explicitMentionsOnly?: boolean | undefined
   readonly store: Pick<Store, 'settings' | 'saveSettings' | 'blockRevision' | 'atomic' | 'tickets' | 'get'>
   readonly sources: SourceRegistry
   /** Notified when a settings save changes the policy version. */
@@ -157,13 +163,21 @@ export class Settings {
     const parsed = rules.parse(value, sources, id)
     const current = store.settings()
     const candidate = rules.merge(current, parsed, id)
+    if (this.host.explicitMentionsOnly && origin !== 'panel' && ['source', 'eval', 'policy', 'executor'].includes(kind)) {
+      throw new UserError('panelOnlyForkPolicy')
+    }
     const model = block === 'eval' ? candidate.eval.model : block === 'executor' ? candidate.executor.model : null
     const previous = block === 'eval' ? current.eval.model : block === 'executor' ? current.executor.model : null
-    if (model && JSON.stringify(model) !== JSON.stringify(previous)) {
+    const usesDsh = block === 'eval' ? candidate.eval.backend === 'dsh' : candidate.executor.backend === 'dsh'
+    if (usesDsh && model && JSON.stringify(model) !== JSON.stringify(previous)) {
       try { await resolveRoleModel(this.host.context, model) }
       catch (error) { throw new UserError('modelUnavailable', { block, error: error instanceof Error ? error.message : String(error) }) }
     }
     rules.guard?.(current, candidate, origin)
+    if (mainBackend(current) !== mainBackend(candidate) && current.eval.backend === 'copilot') {
+      const state = store.get(KV.copilotMain.state)
+      if (state?.inFlight || state?.uncertain) throw new UserError('mainBackendBusy')
+    }
     if (setupChanged(current, candidate)) await this.host.setup.checkAccounts(block, candidate)
     if (stale()) throw new SettingsConflict('Settings changed during the checks. Reload before saving.')
     // Re-read current settings after async checks in case unrelated blocks were saved concurrently.
@@ -173,7 +187,7 @@ export class Settings {
       const delivery = await sessions.delivery(`settings:${block}`)
       return { saved: true, revision: store.blockRevision(block), policy_changed: false, restarting: false, context_delivery: delivery }
     }
-    const restarting = setupChanged(old, settings) || !this.host.setup.configured()
+    const restarting = setupChanged(old, settings) || mainBackend(old) !== mainBackend(settings) || !this.host.setup.configured()
     const before = policyVersion(old), after = policyVersion(settings)
     const scope = (version: SettingsValue) => ({
       scope: (input: { source: string; meta: Record<string, unknown> }) => this.host.sources.scope(input, version) })

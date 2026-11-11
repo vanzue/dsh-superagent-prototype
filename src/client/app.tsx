@@ -1,6 +1,6 @@
 /** Root panel shell: header with global search and glossary, top-level navigation tabs, and active route view. */
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import type { SearchView } from './api.ts'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { caller, usePoll, type SearchView } from './api.ts'
 import { Button, Dot, Icon, Input, Modal, SegmentedTabs } from './controls.tsx'
 import type { DeploymentForm } from './deployment.tsx'
 import { EvalStatus } from './eval.tsx'
@@ -8,7 +8,9 @@ import { ExecutionStatus } from './execution.tsx'
 import { ticketMark } from './marks.ts'
 import { GLOSSARY, GLOSSARY_VALUES, en, zh, type DshSuperagentKey } from './locales.ts'
 import { OverviewPage } from './overview.tsx'
-import { PanelProvider, usePanel, usePanelData } from './provider.tsx'
+import { messages, PanelProvider, usePanel, usePanelData } from './provider.tsx'
+import { MonitorDashboard } from './monitor.tsx'
+import STYLES from './client.css?raw'
 import { HOME, TABS, initialLocation, lastSettingsGroup, remember, routeLabel, settingsRoute, type Location, type Route,
   type Tab } from './route.ts'
 import { SettingsPage } from './settings.tsx'
@@ -98,9 +100,21 @@ function SearchResults({ result, query, onClose }: { result: SearchView; query: 
   </div>
 }
 
-function Header({ masterId }: { masterId: string | undefined }) {
+function MainTranscript({ onClose }: { onClose: () => void }) {
+  const { t, call } = usePanel()
+  const { data, error } = usePoll(() => call('GET main/transcript'), [])
+  return <Modal open onClose={onClose} title={t('mainTranscript')} closeLabel={t('close')}
+    footer={<Button onClick={onClose}>{t('close')}</Button>}>
+    {error && <p role="alert">{error.message}</p>}
+    {data?.map((entry, index) => <details key={index}><summary>{entry.message.role}</summary>
+      <pre className="dt-mono" style={{ whiteSpace: 'pre-wrap' }}>{entry.message.content.map(part => part.text ?? '').join('')}</pre></details>)}
+  </Modal>
+}
+
+function Header({ masterId, copilot }: { masterId: string | undefined; copilot?: boolean }) {
   const { t, call, openSession, notify } = usePanel()
   const [glossary, setGlossary] = useState(false)
+  const [transcript, setTranscript] = useState(false)
   const [query, setQuery] = useState('')
   const [result, setResult] = useState<{ query: string; value: SearchView }>()
   // Ignore responses from superseded or cleared search requests.
@@ -132,9 +146,10 @@ function Header({ masterId }: { masterId: string | undefined }) {
       <Button variant="ghost" size="sm" icon={<Icon name="question" />} aria-label={t('glossary')} title={t('glossary')} aria-haspopup="dialog"
         onClick={() => setGlossary(true)} />
       <Button variant="outline" size="sm" icon={<Icon name="session" size={14} />} disabled={!masterId}
-        onClick={() => { if (masterId) openSession(masterId).catch(failure => notify(errorText(failure))) }}>{t('openMaster')}</Button>
+        onClick={() => { if (copilot) setTranscript(true); else if (masterId) openSession(masterId).catch(failure => notify(errorText(failure))) }}>{t('openMaster')}</Button>
     </div>
     <Glossary open={glossary} onClose={() => setGlossary(false)} />
+    {transcript && <MainTranscript onClose={() => setTranscript(false)} />}
   </header>
 }
 
@@ -160,7 +175,7 @@ function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab
   })()
   return <div className="dt-page">
     <div className="dt-column">
-      <Header masterId={state?.masterId} />
+      <Header masterId={state?.masterId} copilot={!!state?.main} />
       {error && state && <p className="dt-error" role="status">{error.message}</p>}
       <SegmentedTabs className="dt-tabs" label={t('pagesLabel')} value={route.page} onChange={openTab}
         items={TABS.map(value => ({ value, label: t(`tab.${value}`), id: `dt-tab-${value}`, panelId: 'dt-page' }))} />
@@ -170,7 +185,7 @@ function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab
 }
 
 /** Root panel component managing route history and shared panel state. */
-export function App({ t, openSession, deploymentForm }: AppProps) {
+function ExecutionApp({ t, openSession, deploymentForm }: AppProps) {
   const [location, setLocation] = useState(initialLocation)
   useEffect(() => { remember(location) }, [location])
   // Preserve the last opened settings group across navigation so the Settings tab reopens at it.
@@ -185,4 +200,15 @@ export function App({ t, openSession, deploymentForm }: AppProps) {
   return <PanelProvider t={t} openSession={openSession} navigate={navigate} back={back} backLabel={routeLabel(t, location.stack.at(-1) ?? HOME)}>
     <Pages route={location.route} openTab={openTab} deploymentForm={deploymentForm} />
   </PanelProvider>
+}
+
+/** Fail closed until the server declares its mode; a monitor never mounts execution pages or their polling hooks. */
+export function App(props: AppProps) {
+  const translate = useRef(props.t)
+  translate.current = props.t
+  const call = useMemo(() => caller(() => messages(translate.current)), [])
+  const { data, error } = usePoll(() => call('GET mode'), [call])
+  return <><style>{STYLES}</style>{data?.mode === 'monitor' ? <MonitorDashboard t={props.t} call={call} />
+    : data?.mode === 'execution' ? <ExecutionApp {...props} />
+    : <p className={error ? 'dt-error' : 'dt-hint'} role="status">{error?.message ?? props.t('loading')}</p>}</>
 }

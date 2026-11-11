@@ -21,6 +21,7 @@ export function TicketLine({ ticket, question, onChanged, context }: {
       <div className="dt-row-title"><button type="button" className="dt-open" onClick={() => navigate({ page: 'execution',
         id: ticket.id })}>{ticket.title}</button></div>
       <div className="dt-row-meta dt-ticket-meta">
+        {ticket.backend === 'copilot' && <Tag tone="quiet">Copilot</Tag>}
         {ticket.threads.map(thread => <ThreadChip key={thread.key} thread={thread} />)}
         {context && <ContextTag />}
         {ticket.undelivered > 0 && <LabelValue label={t('ticketUndeliveredLabel')} value={ticket.undelivered} />}

@@ -9,6 +9,23 @@ import { usePanel, mount, remount, settle, all, find, tab, click, type, text, fi
 import { server, problemOf, fakeForm } from './fixtures/panel-server.ts'
 
 usePanel()
+it('shows monitor permissions in Plugin Manager without mounting execution settings', async () => {
+  const requests: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    requests.push(url)
+    if (url !== '/orchestrator/api/mode') throw new Error('Monitor must not mount deployment settings')
+    return Response.json({ mode: 'monitor' })
+  }))
+  const container = document.createElement('div'); document.body.append(container)
+  const root = createRoot(container)
+  onTestFinished(() => { act(() => { root.unmount() }); container.remove() })
+  await act(async () => { root.render(<PluginConfig t={translator(zh)} view="page" form={undefined} />) })
+  await settle()
+  expect(text()).toContain(zh['monitor.readonly'])
+  expect(container.querySelector('input')).toBeNull()
+  expect(requests).toEqual(['/orchestrator/api/mode'])
+})
+
 it('saves this machine\'s settings in the Deployment settings through DSH\'s configuration form, without a restart', async () => {
   const { form: editable, mutations } = fakeForm()
   server.form = editable

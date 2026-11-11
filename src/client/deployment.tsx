@@ -6,10 +6,10 @@ import { useCallback, useMemo, useSyncExternalStore } from 'react'
 import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { ConfigPageForm } from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import { LIMITS } from '../limits.ts'
-import type { SetupView } from './api.ts'
+import { caller, usePoll, type SetupView } from './api.ts'
 import { InfoTip, Input } from './controls.tsx'
 import { SaveBar, useDraft } from './draft.tsx'
-import { PanelProvider, usePanel, usePanelData } from './provider.tsx'
+import { messages, PanelProvider, usePanel, usePanelData } from './provider.tsx'
 import { Field, Fields } from './settings-kit.tsx'
 import { setupText, type T } from './text.ts'
 import { CheckSetupButton, Hint, KeyValues, Section, SetupMessage } from './widgets.tsx'
@@ -94,5 +94,13 @@ function PluginPage({ form }: { form: DeploymentForm }) {
 }
 /** DSH Plugin Manager config view entry; renders nothing in `summary` mode because DSH displays the package description. */
 export function PluginConfig({ t, view, form }: { t: T; view: 'page' | 'summary'; form: DeploymentForm }) {
-  return view === 'page' ? <PanelProvider t={t} interval={10_000}><PluginPage form={form} /></PanelProvider> : null
+  return view === 'page' ? <PluginModePage t={t} form={form} /> : null
+}
+function PluginModePage({ t, form }: { t: T; form: DeploymentForm }) {
+  const call = useMemo(() => caller(() => messages(t)), [t])
+  const { data, error } = usePoll(() => call('GET mode'), [call], 10000)
+  if (data?.mode === 'monitor') return <div className="dt-embedded"><h2>{t('monitor.readonly')}</h2>
+    <p>{t('monitor.policy')}</p><p>{t('monitor.credentials')}</p><p>{t('monitor.isolation')}</p></div>
+  return data?.mode === 'execution' ? <PanelProvider t={t} interval={10_000}><PluginPage form={form} /></PanelProvider>
+    : <p role="status">{error?.message ?? t('loading')}</p>
 }

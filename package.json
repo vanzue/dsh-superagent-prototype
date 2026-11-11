@@ -15,6 +15,8 @@
     },
     "./client": "./lib/client.js",
     "./github-watch": "./lib/github-watch.js",
+    "./fork-watch": "./lib/fork-watch.js",
+    "./copilot-model": "./lib/copilot-model.js",
     "./feishu-watch": "./lib/feishu-watch.js",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"

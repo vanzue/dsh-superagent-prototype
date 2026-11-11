@@ -226,9 +226,10 @@ export class DshExecutor implements Executor {
   /** The timers of workers that go on after a passing failure, which dispose clears. */
   private readonly timers = new Set<ReturnType<typeof setTimeout>>()
   /** Registers the `launch` and `delivery` effect handlers; both are held (concurrency limit 0) while processing is paused. */
-  constructor(private readonly host: ExecutorHost) {
-    this.slots = new WorkerSlots(() => host.store.tickets.open().filter(ticket => this.running(ticket)).map(ticket => ticket.id),
+  constructor(private readonly host: ExecutorHost, options: { slots?: WorkerSlots; effects?: boolean } = {}) {
+    this.slots = options.slots ?? new WorkerSlots(() => host.store.tickets.open().filter(ticket => this.running(ticket)).map(ticket => ticket.id),
       () => host.store.settings().executor.maxWorkers)
+    if (options.effects === false) return
     // Each launch reserves a worker slot so launches run concurrently while slots are free.
     host.effects.handle('launch', payload => this.launchQueued(payload), { limit: () => host.paused() ? 0 : this.slots.launches(),
       retry: [5000, 300_000] })
@@ -245,7 +246,7 @@ export class DshExecutor implements Executor {
    * A failed prepare command throws `PrepareFailed`, which is not retried automatically; an empty directory it left is removed, a non-empty one kept.
    * @throws PrepareFailed with the command's output when the prepare command fails.
    */
-  private async prepareDirectory(ticket: Ticket): Promise<void> {
+  async prepareDirectory(ticket: Ticket): Promise<void> {
     const directory = ticket.execution?.directory ?? ''
     await mkdir(dirname(directory), { recursive: true })
     const command = this.host.store.settings().executor.prepare.trim()
@@ -268,7 +269,7 @@ export class DshExecutor implements Executor {
   /** Enqueues a `delivery` effect to steer pending inputs into `ticket`'s running worker session. */
   deliver(ticket: Ticket, _assignment: Assignment): void { this.host.effects.enqueue('delivery', ticket.id, { ticketId: ticket.id }) }
   /** Launches a queued assignment unless its ticket ended or a newer assignment replaced it meanwhile. */
-  private async launchQueued({ ticketId, assignmentId }: { ticketId: string; assignmentId: string }): Promise<void> {
+  async launchQueued({ ticketId, assignmentId }: { ticketId: string; assignmentId: string }): Promise<void> {
     const ticket = this.host.store.tickets.get(ticketId)
     const assignment = ticket && latestAssignment(ticket)
     if (!ticket || !liveTicket(ticket) || assignment?.id !== assignmentId || assignment.state !== 'pending') return
@@ -288,7 +289,7 @@ export class DshExecutor implements Executor {
    * Delivers queued inputs to a running assignment one by one, re-reading ticket state before each delivery so delivery
    * stops immediately if the ticket ended or another assignment took over.
    */
-  private async deliverQueued(ticketId: string): Promise<void> {
+  async deliverQueued(ticketId: string): Promise<void> {
     // A stop of the worker's background work ends with a cancel, which would drop what is delivered meanwhile.
     await this.stopped(ticketId)
     const first = this.host.store.tickets.get(ticketId)
@@ -404,8 +405,8 @@ export class DshExecutor implements Executor {
   /** Number of open tickets whose worker holds a worker slot: its turn runs, or its shell jobs or subagents still run after its turn ended. */
   activeCount(): number { return this.host.store.tickets.open().filter(ticket => this.running(ticket)).length }
   /** Whether a ticket's worker holds a worker slot: its turn runs, or its shell jobs or subagents do after its turn ended. */
-  private running(ticket: Ticket): boolean {
-    if (!runningAssignment(ticket)) return false
+  running(ticket: Ticket): boolean {
+    if (ticket.execution?.backend === 'copilot' || !runningAssignment(ticket)) return false
     return this.host.context.agents.get(workerSessionId(ticket.id) as SessionId)?.status === 'running' || this.settling.has(ticket.id)
   }
   /** Marks a ticket failed after its launch fails; the ticket waits until new human input or an explicit retry arrives. */
@@ -472,7 +473,8 @@ export class DshExecutor implements Executor {
   /** Returns the stored ticket for `agent` when it is a worker session, or undefined otherwise. */
   private ticketOf(agent: Agent): Ticket | undefined {
     const ticketId = ticketOfSession(agent.id)
-    return ticketId === undefined ? undefined : this.host.store.tickets.get(ticketId)
+    const ticket = ticketId === undefined ? undefined : this.host.store.tickets.get(ticketId)
+    return ticket?.execution?.backend === 'copilot' ? undefined : ticket
   }
   /** Subscribes to host `agent/status`, `agent/inbox/claimed`, `session/event` and `agent/error` events for worker sessions. Call once at startup. */
   install(): void {
@@ -525,6 +527,7 @@ export class DshExecutor implements Executor {
   resume(): void {
     // Launch pending tickets oldest first (in acceptance order).
     for (const ticket of this.host.store.tickets.open().sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+      if (ticket.execution?.backend === 'copilot') continue
       const running = runningAssignment(ticket), latest = latestAssignment(ticket)
       if (running) {
         // A restart within this process left DSH's Sessions, jobs and subagents running: they stop first. The inbox keeps an

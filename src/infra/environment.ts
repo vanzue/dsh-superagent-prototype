@@ -120,7 +120,7 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
     MARKER,
     // Make git refuse to commit without an explicit identity set by the worker instead of guessing from the operator's OS user.
     '[user]', '\tuseConfigOnly = true',
-    '[credential]', '\thelper =',
+    '[credential]', '\thelper =', '\tuseHttpPath = true',
     '[credential "https://github.com"]', `\thelper = ${gitQuote(credentialHelper(github.cli))}`,
     '[url "https://github.com/"]', '\tinsteadOf = git@github.com:', '\tinsteadOf = ssh://git@github.com/',
     // Include Git LFS filters because the operator's global gitconfig (which usually holds them) is ignored.

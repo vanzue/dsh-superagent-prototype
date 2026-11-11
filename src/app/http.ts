@@ -27,8 +27,11 @@ import { settingsView } from './views/settings.ts'
 import { sourcesStatus, type SetupState } from './views/sources.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
 import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
+import { MIRROR_STATUS } from '../mirror/sync.ts'
+import type { CopilotMain } from './copilot-main.ts'
 
 export interface HttpHost {
+  readonly main?: CopilotMain | undefined
   readonly store: Store
   /** Feishu message links resolved since startup, used by search to match AppLink URLs. */
   readonly sourceLinks: Pick<TextCache, 'entries'>
@@ -106,7 +109,8 @@ export function stateView(runtime: HttpHost) {
   const settings = runtime.store.settings()
   return { setup: setupView(runtime), load: { ...executorLoad(runtime.store, runtime.executor.activeCount()),
     maxWorkers: settings.executor.maxWorkers },
-    masterId: runtime.masterId, paused: settings.paused, health: runtime.health }
+    masterId: runtime.masterId, paused: settings.paused, health: runtime.health,
+    ...runtime.main ? { main: runtime.main.status() } : {} }
 }
 const views = (runtime: HttpHost): ViewHost => ({ store: runtime.store, sources: runtime.sources, links: runtime.links() })
 const setupState = (runtime: HttpHost): SetupState => ({ deployment: runtime.configured() ? runtime.deployment : undefined,
@@ -153,6 +157,14 @@ function routes(runtime: HttpHost): Routes {
   const ticket = (id: string) => { if (!store.tickets.get(id)) throw new RouteError(404, 'Ticket not found'); return id }
   const promptBody = (input: { body: (maxBytes?: number) => Promise<unknown> }) => input.body(4 * runtime.machine.promptMaxChars.get() + 4096)
   return {
+    'GET mode': () => ({ mode: 'execution' }),
+    'GET monitor': () => { throw new RouteError(404, 'Monitor mode is not enabled') },
+    'GET mirror': () => store.get(MIRROR_STATUS) ?? null,
+    'GET main/transcript': () => runtime.main?.transcript().slice(-200) ?? [],
+    'POST main/recover': () => {
+      if (!runtime.main) throw new RouteError(400, 'The orchestrator uses DSH')
+      runtime.main.recover(); return { recovered: true }
+    },
     'GET state': () => stateView(runtime),
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
       executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem),

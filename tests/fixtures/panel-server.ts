@@ -36,6 +36,7 @@ export function actor(source: string, id: string, human = true): Actor {
 }
 type TicketFields = Omit<TicketRow, 'stage' | 'action'>
 const TICKET = {
+  backend: 'dsh',
   id: 't1', title: '修复回归', state: 'open', actions: { retry: false, stop: true }, strength: 'explicit', ended: undefined,
   attention: undefined, assignments: 1, inputs: 2, undelivered: 0, deliveryError: undefined, sessionId: 'worker-t1', directory: '/w/t1',
   summary: 'working on it', createdAt: '2026-09-22T00:00:00Z', updatedAt: '2026-09-23T00:00:00Z',
@@ -291,6 +292,11 @@ const ticketOf = (id: string) =>
 const SourceSave = z.object({ enabled: z.boolean(), config: z.unknown() })
 
 const ROUTES: { [K in keyof Api]: Route<K> } = {
+  'GET mode': { answer: () => ({ mode: 'execution' }) },
+  'GET monitor': { answer: () => { throw new Error('Monitor mode is not enabled') } },
+  'GET mirror': { answer: () => null },
+  'GET main/transcript': { answer: () => [] },
+  'POST main/recover': { answer: () => ({ recovered: true }) },
   'GET state': { answer: stateView },
   'GET overview': { answer: overviewView },
   'GET search': { query: ['q'], answer: async ({ query }) => {

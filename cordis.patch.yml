@@ -2,10 +2,16 @@
 # profile supplies the `dsh-superagent` entry's stateDir (see docs/006-deployment.md and examples/profile.cordis.patch.yml); the plugin
 # refuses to start without stateDir.
 - insert:
+    - id: dsh-superagent-copilot-model
+      name: dsh-superagent/copilot-model
+      disabled: true
     - id: dsh-superagent
       name: dsh-superagent
     - id: dsh-superagent-github
       name: dsh-superagent/github-watch
+    - id: dsh-superagent-fork
+      name: dsh-superagent/fork-watch
+      disabled: true
     # Optional Feishu Source; requires configuring a bot CLI after enabling.
     - id: dsh-superagent-feishu
       name: dsh-superagent/feishu-watch

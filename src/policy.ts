@@ -81,7 +81,14 @@ export const PolicyConfigSchema = z.object({
   rules: z.array(RuleSchema).refine(rules => new Set(rules.map(rule => rule.id)).size === rules.length, 'Duplicate rule IDs').default(DEFAULT_RULES),
   sources: z.record(z.string().regex(/^[a-z][a-z0-9-]*$/), SourcePolicySchema).default({}),
 }).strict()
+export const CopilotConfigSchema = z.object({
+  executable: z.string().trim().refine(path => path === '' || ABSOLUTE_PATH.test(path), 'An absolute CLI path').default(''),
+  home: z.string().trim().refine(path => path === '' || ABSOLUTE_PATH.test(path), 'An absolute path').default(''),
+  model: z.string().trim().min(1).default('auto'),
+}).strict()
 export const EvalConfigSchema = z.object({
+  backend: z.enum(['dsh', 'copilot']).default('dsh'),
+  copilot: CopilotConfigSchema.default(() => CopilotConfigSchema.parse({})),
   mode: z.enum(['off', 'observe', 'auto']).default('observe'),
   timeoutSeconds: z.number().int().min(LIMITS.evalTimeoutSeconds.min).max(LIMITS.evalTimeoutSeconds.max).default(120),
   model: RoleModelSchema.nullable().default(null),
@@ -90,6 +97,8 @@ const CommandNameSchema = z.string().regex(/^[A-Za-z0-9._-]+$/).refine(name => n
   .refine(name => !WORKER_COMMANDS.includes(name), `${WORKER_COMMANDS.join(', ')} cannot be blocked`)
 /** Executor settings: worker model, concurrency, ticket directory root (empty defaults to `<stateDir>/work`), `prepare` command, and blocked commands. */
 export const ExecutorConfigSchema = z.object({
+  backend: z.enum(['dsh', 'copilot']).default('dsh'),
+  copilot: CopilotConfigSchema.default(() => CopilotConfigSchema.parse({})),
   model: RoleModelSchema.nullable().default(null),
   maxWorkers: z.number().int().min(LIMITS.maxWorkers.min).max(LIMITS.maxWorkers.max).default(3),
   directory: z.string().trim().refine(path => path === '' || ABSOLUTE_PATH.test(path), 'An absolute path, or empty for <stateDir>/work').default(''),

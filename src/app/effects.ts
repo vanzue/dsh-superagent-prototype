@@ -9,6 +9,8 @@ import type { HealthBoard, HealthEntry } from '../infra/health.ts'
 import type { Store } from './store.ts'
 
 export interface EffectPayloads {
+  /** One serial Copilot orchestrator turn; the key is its durable delivery ID. */
+  'main-turn': { text: string }
   /** Build an Eval's candidate card and relay it to the main Session; the key is the Eval ID. */
   assessment: { triggerId: string }
   /** Launch a pending Assignment; the key is the Assignment ID. */

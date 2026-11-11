@@ -209,7 +209,21 @@ function EvalBlock() {
           onChange={event => edit({ timeoutSeconds: event.target.value })} />
       </Field>
       <Section title={t('assessorModel')} hint={t('assessorModelHint')}>
-        <ModelField id="dt-eval-model" value={value.model} onChange={model => edit({ model })} />
+        <Field label={t('mainBackend')} hint={t('mainBackendHint')}>
+          <SegmentedControl<'dsh' | 'copilot'> label={t('mainBackend')} value={value.backend} onChange={backend => edit({ backend })}
+            options={[{ value: 'dsh', label: 'DSH' }, { value: 'copilot', label: 'GitHub Copilot (ACP)' }]} />
+        </Field>
+        {value.backend === 'dsh' ? <ModelField id="dt-eval-model" value={value.model} onChange={model => edit({ model })} /> : <>
+          <Field label={t('copilotExecutable')} hint={t('copilotExecutableHint')}>
+            <Input required value={value.copilot.executable} onChange={event => edit({ copilot: { ...value.copilot, executable: event.target.value } })} />
+          </Field>
+          <Field label={t('copilotHome')} hint={t('copilotHomeHint')}>
+            <Input value={value.copilot.home} onChange={event => edit({ copilot: { ...value.copilot, home: event.target.value } })} />
+          </Field>
+          <Field label={t('copilotModel')}>
+            <Input required value={value.copilot.model} onChange={event => edit({ copilot: { ...value.copilot, model: event.target.value } })} />
+          </Field>
+        </>}
       </Section>
     </Fields>
     <SaveBar {...draft} onDiscard={draft.discard} />

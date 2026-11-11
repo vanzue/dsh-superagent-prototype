@@ -8,6 +8,9 @@ import type { SettingsView } from './views/settings.ts'
 import type { SourceStatusView } from './views/sources.ts'
 import type { DecisionListView, SearchView, ThreadDetailView, ThreadListView } from './views/threads.ts'
 import type { TicketListView } from './views/tickets.ts'
+import type { MonitorView } from '../monitor/model.ts'
+import type { MirrorStatus } from '../mirror/sync.ts'
+import type { WorkerTranscriptEntry } from '../executor/copilot.ts'
 
 export const TICKET_FILTERS = ['open', 'person', 'working', 'idle', 'ended'] as const
 export const THREAD_FILTERS = ['subscribed', 'evaluating', 'recent', 'all'] as const
@@ -18,6 +21,11 @@ interface Paged { offset?: number; limit?: number }
 type Delivery = 'injected' | 'pending'
 
 export interface Api {
+  'GET mode': { response: { mode: 'execution' | 'monitor' } }
+  'GET monitor': { response: MonitorView }
+  'GET mirror': { response: MirrorStatus | null }
+  'GET main/transcript': { response: WorkerTranscriptEntry[] }
+  'POST main/recover': { response: { recovered: true } }
   'GET state': { response: StateView }
   'GET overview': { response: OverviewView }
   'GET search': { query: { q: string }; response: SearchView }

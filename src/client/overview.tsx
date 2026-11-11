@@ -8,6 +8,37 @@ import { TicketLine } from './rows.tsx'
 import { healthText, localized, reasonLabel, valueLabel, readableMarkers } from './text.ts'
 import { CheckSetupButton, ConfirmButton, Hint, LoadState, Section, SetupMessage } from './widgets.tsx'
 
+function MirrorOverview() {
+  const { t, call } = usePanel()
+  const { data } = usePoll(() => call('GET mirror'), [], 10000)
+  if (!data) return null
+  return <Section title={t('mirror.title')}>
+    <p>{data.upstream} → {data.fork}</p>
+    <Hint>{t('mirror.policy')}</Hint>
+    <p>{t('mirror.progress', { issues: data.issues, discussions: data.discussions, comments: data.comments, changes: data.changes })}</p>
+    <p>{t(`mirror.${data.phase}`)} · {t('mirror.next', { at: data.nextRunAt ? new Date(data.nextRunAt).toLocaleString() : t('empty') })}</p>
+    {data.error && <p className="dt-error" role="alert">{data.error}</p>}
+    <div className="dt-row-meta"><a href={`https://github.com/${data.fork}/issues`} target="_blank" rel="noopener noreferrer">{t('monitor.issues')}</a>
+      <a href={`https://github.com/${data.fork}/discussions`} target="_blank" rel="noopener noreferrer">Discussions</a></div>
+    <ul className="dt-list">{data.recent.slice(0, 5).map(value => <li className="dt-row" key={value.upstream}>
+      <a className="dt-open" href={value.fork} target="_blank" rel="noopener noreferrer">{value.title}</a></li>)}</ul>
+  </Section>
+}
+
+function MainOverview() {
+  const { t, call } = usePanel()
+  const { state, reload } = usePanelData()
+  const main = state?.main
+  if (!main) return null
+  return <Section title={t('mainBackend')}>
+    <p>GitHub Copilot (ACP) · {t(main.running ? 'mainRunning' : 'mainIdle')}</p>
+    {main.sessionId && <p className="dt-mono">{main.sessionId}</p>}
+    {main.error && <p className="dt-error" role="alert">{main.error}</p>}
+    {main.uncertain && !main.running && <ConfirmButton label={t('mainRecover')} title={t('mainRecover')} message={t('mainRecoverConfirm')}
+      onConfirm={async () => { await call('POST main/recover'); await reload() }} />}
+  </Section>
+}
+
 function ProblemLine({ problem, onChanged }: { problem: Problem; onChanged: () => Promise<void> }) {
   const { t, call, navigate } = usePanel()
   const post = useAction((request: () => Promise<unknown>) => request(), { reload: onChanged })
@@ -71,6 +102,8 @@ export function OverviewPage() {
   const more = (route: Route) => <button type="button" className="dt-textlink dt-more-link"
     onClick={() => navigate(route)}>{t('details')}</button>
   return <>
+    <MainOverview />
+    <MirrorOverview />
     {error && <LoadState error={error} loading={false} />}
     <Section title={t('pendingTickets')} count={data.person.length}>
       {data.person.length ? <ul className="dt-list dt-cards">{data.person.map(ticket => <TicketLine key={ticket.id} ticket={ticket} question

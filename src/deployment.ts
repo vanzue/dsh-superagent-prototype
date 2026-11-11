@@ -15,6 +15,14 @@ const absolute = (description: string) => s.string().pattern(ABSOLUTE_PATH).desc
 /** Plugin configuration of the dsh-superagent entry. Volatile fields apply without a restart because dsh-superagent reads them on each use; changing `stateDir` remounts the plugin. */
 export const Config = s.object({
   stateDir: absolute('Directory for the database, locks, worker shims, the agent\'s git configuration and, by default, the ticket directories.').required(),
+  mode: s.union(['execution', 'monitor']).default('execution')
+    .description('Monitor mounts only a credential-free, read-only public repository dashboard. Requires a separate state directory.'),
+  explicitMentionsOnly: s.boolean().default(false).description('Receive only fresh allowlisted human mentions; ignore all automatic events and unaddressed followups.'),
+  monitor: s.object({
+    repository: s.string().default('').description('Public GitHub repository owner/name. Used only in monitor mode.'),
+    pollSeconds: s.number().min(300).max(86400).step(1).default(900)
+      .description('Snapshot refresh interval; GitHub rate limits can delay the next refresh.'),
+  }),
   promptMaxChars: s.number().min(LIMITS.promptMaxChars.min).max(LIMITS.promptMaxChars.max).step(1).default(100000)
     .description('Largest saved prompt configuration, in characters.').volatile(),
   admissionContextMaxPages: s.number().min(LIMITS.admissionContextMaxPages.min).max(LIMITS.admissionContextMaxPages.max).step(1).default(10)
@@ -25,6 +33,7 @@ export const Config = s.object({
 export type DeploymentConfig = ReturnType<typeof Config>
 export interface Machine {
   stateDir: string
+  explicitMentionsOnly?: boolean
   promptMaxChars: Volatile<number>
   admissionContextMaxPages: Volatile<number>
   admissionContextTimeoutMs: Volatile<number>
@@ -40,7 +49,8 @@ export function machineOf(config: DeploymentConfig): Machine {
   const unknown = Object.keys(config).filter(key => !(key in (Config.dict ?? {})))
   if (unknown.length) throw new Error(`dsh-superagent configuration has keys it does not use: ${unknown.map(key => MOVED[key] ? `${key} (now ${MOVED[key]})` : key).join(', ')}; docs/006-deployment.md lists the keys`)
   const { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs } = config
-  return { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs }
+  return { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs,
+    ...config.explicitMentionsOnly ? { explicitMentionsOnly: true } : {} }
 }
 
 export const GithubAccountsSchema = z.object({

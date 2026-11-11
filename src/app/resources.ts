@@ -19,6 +19,7 @@ import type { Settings } from './settings.ts'
 import { KV } from '../kv.ts'
 import type { Store } from './store.ts'
 import type { TextCache } from './cache.ts'
+import type { WorkerTranscriptEntry } from '../executor/copilot.ts'
 
 /** Resource descriptors exposed via orchestrator_read, marking which resources worker sessions may also read for their own ticket. */
 export const RESOURCES: readonly { name: string; holds: string; executor?: true }[] = [
@@ -66,6 +67,7 @@ export interface ResourceHost {
   promptVersion(sessionId: string): PromptVersion
   /** Whether a Session may read `revision` (the revision it currently runs under or any revision it ran under previously). */
   mayRead(sessionId: string, revision: number): boolean
+  workerTranscript?(ticketId: string): WorkerTranscriptEntry[]
   feishuPageSize(): number
   sourceLink(trigger: Trigger, signal?: AbortSignal): Promise<{ source_url?: string; source_url_read?: string }>
 }
@@ -112,7 +114,8 @@ const THREAD_DECISIONS = 5
 const triggerLine = (trigger: Trigger) => ({ trigger_id: trigger.id, actor: trigger.actor.id, human: trigger.human, at: trigger.at,
   preview: preview(trigger.text), chars: trigger.text.length, read: `trigger/${trigger.id}` })
 async function transcript(host: ResourceHost, ticketId: string) {
-  return (await host.context.sessionController.inspect(workerSessionId(ticketId) as SessionId)).events
+  if (host.store.tickets.get(ticketId)?.execution?.backend === 'copilot') return host.workerTranscript?.(ticketId) ?? []
+  return (await host.context.sessionController.inspect(workerSessionId(ticketId) as SessionId)).events.map(transcriptEntry)
 }
 
 const ROUTES: readonly Route[] = [
@@ -269,8 +272,7 @@ const ROUTES: readonly Route[] = [
       if (message === undefined) throw new Error('Unknown ticket input')
       body = message
     } else if (section === 'message' && part && /^\d+$/.test(part)) {
-      const event = (await transcript(host, id))[Number(part)]
-      const entry = event && transcriptEntry(event)
+      const entry = (await transcript(host, id))[Number(part)]
       if (!entry) throw new Error('Unknown transcript entry')
       body = JSON.stringify(entry)
     } else if (section === 'report' && part) {
@@ -281,8 +283,7 @@ const ROUTES: readonly Route[] = [
     else if (section === 'assignment') body = ticket.execution?.assignment ?? ''
     else if (section === 'result') body = latestReport(ticket)?.summary ?? ''
     else if (section === 'transcript') {
-      body = (await transcript(host, id)).flatMap((event, index) => {
-        const entry = transcriptEntry(event)
+      body = (await transcript(host, id)).flatMap((entry, index) => {
         const said = entry?.message.content.map(block => block.type === 'text' ? block.text : `[${block.type}]`).join(' ') ?? ''
         return entry ? [{ type: entry.type, preview: preview(said).slice(0, 80), chars: JSON.stringify(entry).length,
           read: `ticket/${id}/message/${index}` }] : []
